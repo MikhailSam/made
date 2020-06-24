@@ -23,6 +23,6 @@ Samokhvalov Mikhail
 Остальные файлы - вспомогательные
 
 ### Итог:
-скор 9.41 , 43 место
+скор 1.62831 , 35 место
 
 ![Alt text](results2.png?raw=true "results")
