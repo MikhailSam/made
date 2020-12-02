@@ -1,6 +1,6 @@
 package org.apache.spark.ml.made
 
-import breeze.linalg.{Vector => BrVector}
+import breeze.linalg.{DenseVector => BrVector, sum}
 import org.apache.spark.ml.linalg.{DenseVector, Vector, VectorUDT, Vectors}
 import org.apache.spark.ml.param.ParamMap
 import org.apache.spark.ml.param.shared.{HasInputCol, HasOutputCol}
@@ -9,6 +9,7 @@ import org.apache.spark.ml.{Estimator, Model}
 import org.apache.spark.mllib
 import org.apache.spark.mllib.stat.MultivariateOnlineSummarizer
 import org.apache.spark.sql.catalyst.encoders.ExpressionEncoder
+import org.apache.spark.sql.functions.lit
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.{DataFrame, Dataset, Encoder}
 
@@ -28,33 +29,43 @@ trait LinearRegressionParams extends HasInputCol with HasOutputCol {
   }
 }
 
+// ESTIMATOR
 class LinearRegression(override val uid: String) extends Estimator[LinearRegressionModel] with LinearRegressionParams
   with DefaultParamsWritable {
-  val lr = 0.0001
+  val lr = 0.001
   val num_rounds = 100
 
   def this() = this(Identifiable.randomUID("linearRegression"))
 
   override def fit(dataset: Dataset[_]): LinearRegressionModel = {
 
-    implicit val encoder : Encoder[Vector] = ExpressionEncoder()
-//    val vectors: Dataset[Vector] = dataset.select(dataset($(inputCol)).as[Vector])
-    val W_size: Int = MetadataUtils.getNumFeatures(dataset, $(inputCol))
-    var W: BrVector[Double] = BrVector.rand[Double](W_size)
+    implicit val encoder: Encoder[Vector] = ExpressionEncoder()
+    dataset.show()
+    val input: Dataset[Vector] = dataset.select(dataset($(inputCol))).as[Vector]
+    println(s"INPUT:")
+    input.show()
+    val f_size: Int = MetadataUtils.getNumFeatures(dataset, $(inputCol))
+    var W: BrVector[Double] = BrVector.rand[Double](f_size) // include B
 
     for (i <- 0 to num_rounds) {
-
+      val summary = input.rdd.mapPartitions((data: Iterator[Vector]) => {
+        val summarizer = new MultivariateOnlineSummarizer()
+        data.foreach(
+          v => {
+            val X = v.asBreeze(0 until f_size).toDenseVector
+            val preds = X * W(0 until f_size) + W(-1) // !!!!!!!!!!!!!!!!!!!!!
+            val error = preds - v.asBreeze(-1)
+            val grad = X * sum(error)
+            summarizer.add(mllib.linalg.Vectors.fromBreeze(grad))
+        })
+        Iterator(summarizer)
+      }).reduce(_ merge _)
+      W = W - lr * summary.mean.asBreeze
     }
 
-    val summary = vectors.rdd.mapPartitions((data: Iterator[Vector]) => {
-      val summarizer = new MultivariateOnlineSummarizer()
-      data.foreach(v => summarizer.add(mllib.linalg.Vectors.fromBreeze(v.asBreeze)))
-      Iterator(summarizer)
-    }).reduce(_ merge _)
-
     copyValues(new LinearRegressionModel(
-      summary.mean.asML,
-      Vectors.fromBreeze(breeze.numerics.sqrt(summary.variance.asBreeze)))).setParent(this)
+      Vectors.fromBreeze(W).toDense)
+    ).setParent(this)
  }
 
   override def copy(extra: ParamMap): Estimator[LinearRegressionModel] = defaultCopy(extra)
@@ -65,25 +76,25 @@ class LinearRegression(override val uid: String) extends Estimator[LinearRegress
 
 object LinearRegression extends DefaultParamsReadable[LinearRegression]
 
+// MODEL
 class LinearRegressionModel private[made](
                                          override val uid: String,
-                                         val means: DenseVector,
-                                         val stds: DenseVector) extends Model[LinearRegressionModel] with LinearRegressionParams with MLWritable {
+                                         val W: DenseVector) extends Model[LinearRegressionModel]
+  with LinearRegressionParams with MLWritable {
 
+  private[made] def this(W: DenseVector) =
+    this(Identifiable.randomUID("standardScalerModel"), W)
 
-  private[made] def this(means: Vector, stds: Vector) =
-    this(Identifiable.randomUID("standardScalerModel"), means.toDense, stds.toDense)
-
-  override def copy(extra: ParamMap): LinearRegressionModel = copyValues(new LinearRegressionModel(means, stds))
+  override def copy(extra: ParamMap): LinearRegressionModel = copyValues(new LinearRegressionModel(W))
 
   override def transform(dataset: Dataset[_]): DataFrame = {
-    val bMean = means.asBreeze
-    val bStds = stds.asBreeze
     val transformUdf = dataset.sqlContext.udf.register(uid + "_transform",
       (x : Vector) => {
-        Vectors.fromBreeze((x.asBreeze - bMean) /:/ bStds)
+        (x.asBreeze dot W.asBreeze(0 until x.size) + W.asBreeze(x.size))
       })
-
+    println("WEIGHTS")
+    println(W)
+    print()
     dataset.withColumn($(outputCol), transformUdf(dataset($(inputCol))))
   }
 
@@ -92,9 +103,8 @@ class LinearRegressionModel private[made](
   override def write: MLWriter = new DefaultParamsWriter(this) {
     override protected def saveImpl(path: String): Unit = {
       super.saveImpl(path)
-
-      val vectors = means.asInstanceOf[Vector] -> stds.asInstanceOf[Vector]
-
+//      val vectors = W.asInstanceOf[Vector] -> stds.asInstanceOf[Vector]
+      val vectors = Tuple1(W.asInstanceOf[Vector])
       sqlContext.createDataFrame(Seq(vectors)).write.parquet(path + "/vectors")
     }
   }
@@ -110,9 +120,8 @@ object LinearRegressionModel extends MLReadable[LinearRegressionModel] {
       // Used to convert untyped dataframes to datasets with vectors
       implicit val encoder : Encoder[Vector] = ExpressionEncoder()
 
-      val (means, std) =  vectors.select(vectors("_1").as[Vector], vectors("_2").as[Vector]).first()
-
-      val model = new LinearRegressionModel(means, std)
+      val W = vectors.select(vectors("_1").as[Vector]).first()
+      val model = new LinearRegressionModel(W.toDense)
       metadata.getAndSetParams(model)
       model
     }

@@ -1,5 +1,6 @@
 package org.apache.spark.ml.made
 
+import breeze.linalg.{DenseMatrix, DenseVector}
 import com.google.common.io.Files
 import org.apache.spark.ml.linalg.{Vector, Vectors}
 import org.apache.spark.ml.{Pipeline, PipelineModel}
@@ -9,73 +10,41 @@ import org.scalatest.matchers._
 
 class LinearRegressionTest extends AnyFlatSpec with should.Matchers with WithSpark {
 
+  lazy val train_data: DataFrame = LinearRegressionTest._train_data
+  lazy val test_data: DataFrame = LinearRegressionTest._test_data
+
   val delta = 0.0001
-  lazy val data: DataFrame = LinearRegressionTest._data
-  lazy val vectors: Seq[Vector] = LinearRegressionTest._vectors
-
-  "Model" should "scale input data" in {
-    val model: LinearRegressionModel = new LinearRegressionModel(
-      means = Vectors.dense(2.0, -0.5).toDense,
-      stds = Vectors.dense(1.5, 0.5).toDense
-    ).setInputCol("features")
-      .setOutputCol("features")
-
-
-    val vectors: Array[Vector] = model.transform(data).collect().map(_.getAs[Vector](0))
-
-    vectors.length should be(2)
-
-    vectors(0)(0) should be((13.5 - 2.0) / 1.5 +- delta)
-    vectors(0)(1) should be((12 + 0.5) / 0.5 +- delta)
-
-    vectors(1)(0) should be((-1 - 2.0) / 1.5 +- delta)
-    vectors(1)(1) should be((0 + 0.5) / 0.5 +- delta)
-  }
-
-  "Estimator" should "calculate means" in {
-    val estimator = new LinearRegression()
-      .setInputCol("features")
-      .setOutputCol("features")
-
-    val model = estimator.fit(data)
-
-    model.means(0) should be(vectors.map(_(0)).sum / vectors.length +- delta)
-    model.means(1) should be(vectors.map(_(1)).sum / vectors.length +- delta)
-  }
-
-  "Estimator" should "calculate stds" in {
-    val estimator = new LinearRegression()
-      .setInputCol("features")
-      .setOutputCol("features")
-
-    val model = estimator.fit(data)
-
-    //    model.stds(0) should be(Math.sqrt(vectors.map(v => v(0) * v(0)).sum / vectors.length - model.means(0) * model.means(0)) +- delta)
-    //    model.stds(1) should be(Math.sqrt(vectors.map(v => v(1) * v(1)).sum / vectors.length - model.means(1) * model.means(1)) +- delta)
-    model.stds(0) should be(Math.sqrt(vectors.map(v => (v(0) -  model.means(0))).map(x => x*x).sum / (vectors.length - 1)) +- delta)
-    model.stds(1) should be(Math.sqrt(vectors.map(v => (v(1) -  model.means(1))).map(x => x*x).sum / (vectors.length - 1)) +- delta)
-  }
-
-  "Estimator" should "should produce functional model" in {
-    val estimator = new LinearRegression()
-      .setInputCol("features")
-      .setOutputCol("features")
-
-    val model = estimator.fit(data)
-
-    validateModel(model, model.transform(data))
-  }
 
   private def validateModel(model: LinearRegressionModel, data: DataFrame) = {
-    val vectors: Array[Vector] = data.collect().map(_.getAs[Vector](0))
+    val result = model.transform(data).collect()
 
-    vectors.length should be(2)
+//    result.length should be(4)
+//    //ToDo: add more code
+//    result(0) should be(12.0 +- delta)
+//    vectors(1)(2) should be(10.0 +- delta)
+//    vectors(2)(2) should be(2.0 +- delta)
+//    vectors(3)(2) should be(0.5 +- delta)
+  }
 
-    vectors(0)(0) should be((13.5 - model.means(0)) / model.stds(0) +- delta)
-    vectors(0)(1) should be((12 - model.means(1)) / model.stds(1) +- delta)
+  "Estimator" should "fit" in {
+    val estimator: LinearRegression = new LinearRegression()
+      .setInputCol("features")
+      .setOutputCol("features")
 
-    vectors(1)(0) should be((-1 - model.means(0)) / model.stds(0) +- delta)
-    vectors(1)(1) should be((0 - model.means(1)) / model.stds(1) +- delta)
+    val model = estimator.fit(train_data)
+    val vectors = model.transform(test_data).collect()
+
+    vectors.length should be(4)
+    println(vectors.mkString(" "))
+  }
+
+  "Estimator" should "predict" in {
+    val estimator = new LinearRegression()
+      .setInputCol("features")
+      .setOutputCol("features")
+
+    val model = estimator.fit(train_data)
+    validateModel(model, test_data)
   }
 
   "Estimator" should "work after re-read" in {
@@ -87,13 +56,14 @@ class LinearRegressionTest extends AnyFlatSpec with should.Matchers with WithSpa
     ))
 
     val tmpFolder = Files.createTempDir()
-
     pipeline.write.overwrite().save(tmpFolder.getAbsolutePath)
 
-    val model = Pipeline.load(tmpFolder.getAbsolutePath).fit(data).stages(0).asInstanceOf[LinearRegressionModel]
+    val model = Pipeline
+      .load(tmpFolder.getAbsolutePath)
+      .fit(train_data).stages(0)
+      .asInstanceOf[LinearRegressionModel]
 
-    model.means(0) should be(vectors.map(_(0)).sum / vectors.length +- delta)
-    model.means(1) should be(vectors.map(_(1)).sum / vectors.length +- delta)
+    validateModel(model, test_data)
   }
 
   "Model" should "work after re-read" in {
@@ -104,27 +74,37 @@ class LinearRegressionTest extends AnyFlatSpec with should.Matchers with WithSpa
         .setOutputCol("features")
     ))
 
-    val model = pipeline.fit(data)
-
+    val model = pipeline.fit(train_data)
     val tmpFolder = Files.createTempDir()
-
     model.write.overwrite().save(tmpFolder.getAbsolutePath)
 
     val reRead = PipelineModel.load(tmpFolder.getAbsolutePath)
-
-    validateModel(model.stages(0).asInstanceOf[LinearRegressionModel], reRead.transform(data))
+    validateModel(model.stages(0).asInstanceOf[LinearRegressionModel], test_data)
   }
 }
 
 object LinearRegressionTest extends WithSpark {
 
-  lazy val _vectors = Seq(
-    Vectors.dense(13.5, 12),
-    Vectors.dense(-1, 0)
+  lazy val _train_vectors = Seq(
+    Vectors.dense(1, 1, 3),
+    Vectors.dense(1, 2, 5),
+    Vectors.dense(2, 3, 8),
+    Vectors.dense(2, 4, 10),
+    Vectors.dense(3, 5, 13)
   )
-
-  lazy val _data: DataFrame = {
+//  lazy val y = Vectors.dense(12,10,0,2)
+  lazy val _train_data: DataFrame = {
     import sqlc.implicits._
-    _vectors.map(x => Tuple1(x)).toDF("features")
+    _train_vectors.map(x => Tuple1(x)).toDF("features")
+  }
+
+  lazy val _test_vectors = Seq(
+    Vectors.dense(1, 1),
+    Vectors.dense(1, 2),
+    Vectors.dense(2, 3),
+    Vectors.dense(2, 4))
+  lazy val _test_data: DataFrame = {
+    import sqlc.implicits._
+    _test_vectors.map(x => Tuple1(x)).toDF("features")
   }
 }
