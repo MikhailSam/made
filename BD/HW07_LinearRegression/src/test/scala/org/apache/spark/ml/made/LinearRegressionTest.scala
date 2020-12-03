@@ -1,6 +1,5 @@
 package org.apache.spark.ml.made
 
-import breeze.linalg.{DenseMatrix, DenseVector}
 import com.google.common.io.Files
 import org.apache.spark.ml.linalg.{Vector, Vectors}
 import org.apache.spark.ml.{Pipeline, PipelineModel}
@@ -13,17 +12,21 @@ class LinearRegressionTest extends AnyFlatSpec with should.Matchers with WithSpa
   lazy val train_data: DataFrame = LinearRegressionTest._train_data
   lazy val test_data: DataFrame = LinearRegressionTest._test_data
 
-  val delta = 0.0001
+  val delta = 0.5
 
   private def validateModel(model: LinearRegressionModel, data: DataFrame) = {
     val result = model.transform(data).collect()
 
-//    result.length should be(4)
-//    //ToDo: add more code
-//    result(0) should be(12.0 +- delta)
-//    vectors(1)(2) should be(10.0 +- delta)
-//    vectors(2)(2) should be(2.0 +- delta)
-//    vectors(3)(2) should be(0.5 +- delta)
+    result.length should be(4)
+//    val res1 = result(1)(0)
+//    println(result.mkString(" "))
+//    println(s"RESULT: $res1")
+
+    result(0).getDouble(0) should be(3.0 +- delta)
+    result(1).getDouble(0) should be(5.0 +- delta)
+    result(2).getDouble(0) should be(8.0 +- delta)
+    result(3).getDouble(0) should be(10.0 +- delta)
+
   }
 
   "Estimator" should "fit" in {

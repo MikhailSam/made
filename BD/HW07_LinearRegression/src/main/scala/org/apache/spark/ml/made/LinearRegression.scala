@@ -32,7 +32,7 @@ trait LinearRegressionParams extends HasInputCol with HasOutputCol {
 // ESTIMATOR
 class LinearRegression(override val uid: String) extends Estimator[LinearRegressionModel] with LinearRegressionParams
   with DefaultParamsWritable {
-  val lr = 0.001
+  val lr = 0.01
   val num_rounds = 100
 
   def this() = this(Identifiable.randomUID("linearRegression"))
@@ -47,16 +47,25 @@ class LinearRegression(override val uid: String) extends Estimator[LinearRegress
     val f_size: Int = MetadataUtils.getNumFeatures(dataset, $(inputCol))
     var W: BrVector[Double] = BrVector.rand[Double](f_size) // include B
 
+//    println(s"W: $W")
+    // Вот тут получилось сложно...
     for (i <- 0 to num_rounds) {
       val summary = input.rdd.mapPartitions((data: Iterator[Vector]) => {
         val summarizer = new MultivariateOnlineSummarizer()
         data.foreach(
           v => {
-            val X = v.asBreeze(0 until f_size).toDenseVector
-            val preds = X * W(0 until f_size) + W(-1) // !!!!!!!!!!!!!!!!!!!!!
+            val X = v.asBreeze(0 until f_size-1).toDenseVector
+//            println(s"X: $X")
+            val preds = X dot W(0 until f_size-1) + W(-1) // !!!!!!!!!!!!!!!!!!!!!
+            val dot = X dot W(0 until f_size-1)
+//            println(s"DOT: $dot")
+//            println(s"preds: $preds")
             val error = preds - v.asBreeze(-1)
-            val grad = X * sum(error)
-            summarizer.add(mllib.linalg.Vectors.fromBreeze(grad))
+//            println(s"error: $error")
+            val grad = X * error
+//            println(s"grad: $grad")
+            val total_grad = BrVector(grad(0), grad(1), error)
+            summarizer.add(mllib.linalg.Vectors.fromBreeze(total_grad))
         })
         Iterator(summarizer)
       }).reduce(_ merge _)
